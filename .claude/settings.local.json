@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/ahmar.abrar/Desktop/**)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:pypi.org)",
+      "Bash(python parse_kmi.py)",
+      "Bash(python3 parse_kmi.py)",
+      "Bash(where py:*)",
+      "Bash(where python3.exe)",
+      "Bash(ls /c/Python*)",
+      "Read(//c/Users/ahmar.abrar/AppData/Local/Programs/**)",
+      "Bash(py parse_kmi.py)",
+      "Bash(/c/Users/ahmar.abrar/AppData/Local/Microsoft/WindowsApps/python3.exe parse_kmi.py)",
+      "Read(//c/Users/ahmar.abrar/AppData/Local//**)",
+      "Read(//c/ProgramData//**)",
+      "Read(//c/Program Files//**)",
+      "Read(//c/Program Files \\(x86\\)//**)",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"D:\\\\WorkingDirectory\\\\Projects\\\\psx_scanner\\\\test_yfinance.ps1\")",
+      "WebFetch(domain:marketstack.com)",
+      "WebFetch(domain:docs.apilayer.com)"
+    ]
+  }
+}

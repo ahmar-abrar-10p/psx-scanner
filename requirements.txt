@@ -1,0 +1,8 @@
+streamlit>=1.56.0
+crewai>=1.13.0
+pandas>=2.0.0
+pandas-ta>=0.4.0
+yfinance>=0.2.0
+langchain-google-genai>=4.0.0
+python-dotenv>=1.0.0
+curl_cffi>=0.7.0
