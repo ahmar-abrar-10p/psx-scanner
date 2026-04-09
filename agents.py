@@ -1,17 +1,52 @@
-from crewai import Agent, Task, Crew, Process
+from crewai import Agent, Task, Crew, Process, LLM
 from langchain_google_genai import ChatGoogleGenerativeAI
+from pathlib import Path
+from datetime import datetime
 import os
+
+PROMPT_LOG_DIR = Path(__file__).parent / "prompt_logs"
+
+
+def _save_prompt_log(prompts: dict, scan_meta: dict) -> Path:
+    """Save the rendered agent prompts to a timestamped file for inspection."""
+    PROMPT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    path = PROMPT_LOG_DIR / f"scan_{ts}.txt"
+
+    lines = []
+    lines.append("=" * 80)
+    lines.append(f"PSX SCANNER — PROMPT LOG  ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
+    lines.append("=" * 80)
+    for k, v in scan_meta.items():
+        lines.append(f"{k}: {v}")
+    lines.append("")
+
+    for agent_name, prompt_text in prompts.items():
+        lines.append("=" * 80)
+        lines.append(f"AGENT: {agent_name}")
+        lines.append("=" * 80)
+        lines.append(prompt_text)
+        lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
 
 
 def get_llm(provider: str = "gemini", api_key: str = None):
     """
-    Return LLM instance based on provider selection.
-    Easily extensible to add more providers.
+    Return LangChain LLM instance — used for direct AI calls (data fetching).
     """
     if provider == "gemini":
         return ChatGoogleGenerativeAI(
             model="gemini-2.0-flash",
             google_api_key=api_key or os.getenv("GEMINI_API_KEY"),
+            temperature=0.3,
+        )
+    elif provider == "groq":
+        from langchain_groq import ChatGroq
+        return ChatGroq(
+            model="llama-3.3-70b-versatile",
+            api_key=api_key or os.getenv("GROQ_API_KEY"),
             temperature=0.3,
         )
     elif provider == "openai":
@@ -25,12 +60,40 @@ def get_llm(provider: str = "gemini", api_key: str = None):
         raise ValueError(f"Unsupported provider: {provider}")
 
 
+def get_crewai_llm(provider: str = "gemini", api_key: str = None):
+    """
+    Return CrewAI LLM instance — used for CrewAI agents.
+    CrewAI uses its own LLM wrapper, not LangChain objects directly.
+    """
+    if provider == "gemini":
+        return LLM(
+            model="gemini/gemini-2.0-flash",
+            api_key=api_key or os.getenv("GEMINI_API_KEY"),
+            temperature=0.3,
+        )
+    elif provider == "groq":
+        return LLM(
+            model="groq/llama-3.3-70b-versatile",
+            api_key=api_key or os.getenv("GROQ_API_KEY"),
+            temperature=0.3,
+        )
+    elif provider == "openai":
+        return LLM(
+            model="openai/gpt-4o-mini",
+            api_key=api_key or os.getenv("OPENAI_API_KEY"),
+            temperature=0.3,
+        )
+    else:
+        raise ValueError(f"Unsupported provider: {provider}")
+
+
 def run_analysis(
     stocks_data: list[dict],
     trade_style: str = "T+1",
     risk_level: str = "Moderate",
     provider: str = "gemini",
     api_key: str = None,
+    progress_callback=None,
 ) -> str:
     """
     Run CrewAI two-agent pipeline on pre-computed stock technicals.
@@ -40,7 +103,7 @@ def run_analysis(
 
     Returns raw string output from Strategist agent.
     """
-    llm = get_llm(provider, api_key)
+    llm = get_crewai_llm(provider, api_key)
 
     # Format stocks data as a readable string for the agents
     stocks_text = _format_stocks_for_agents(stocks_data)
@@ -75,9 +138,9 @@ def run_analysis(
     )
 
     # --- Task 1: Screen and shortlist ---
-    screening_task = Task(
-        description=f"""
-You have been given technical data for {len(stocks_data)} PSX Shariah-compliant stocks.
+    screening_prompt = f"""
+You have been given technical data for ALL {len(stocks_data)} PSX Shariah-compliant stocks in the KMI Top 100 universe.
+Do NOT pre-filter — analyze every single stock and rank them by conviction.
 
 STOCK DATA:
 {stocks_text}
@@ -86,24 +149,26 @@ TRADE STYLE: {trade_style}
 RISK LEVEL: {risk_level}
 
 Your job:
-1. Screen all stocks using these technical rules:
+1. Analyze ALL {len(stocks_data)} stocks using these technical rules:
    - RSI between 40-70 (momentum without being overbought)
    - Price above EMA20 (uptrend confirmation)
    - Volume ratio > 1.2 (above average volume — institutional interest)
    - MACD histogram positive or turning positive (bullish momentum)
 2. Rank candidates by confluence (how many signals align)
-3. Output a shortlist of 15-20 best candidates with their key metrics
+3. Output your TOP 20 strongest candidates with their key metrics and a confluence score (0-4)
 
-Be strict. Only include stocks that meet at least 3 of the 4 criteria.
-""",
-        expected_output="A shortlist of 15-20 stocks with symbol, price, RSI, EMA status, volume ratio, MACD status, and confluence score",
+Be strict. Prioritize stocks meeting at least 3 of the 4 criteria, but you may include high-conviction setups
+that meet only 2 if other factors (extreme volume, near 52-week high breakout, etc.) strongly support them.
+"""
+    screening_task = Task(
+        description=screening_prompt,
+        expected_output="Top 20 strongest stocks ranked by confluence, with symbol, price, RSI, EMA status, volume ratio, MACD status, and confluence score (0-4)",
         agent=analyst,
     )
 
     # --- Task 2: Generate trade plans ---
-    trade_plan_task = Task(
-        description=f"""
-Using the analyst's shortlist, generate complete trade plans for the TOP 10 stocks.
+    strategist_prompt = f"""
+Using the analyst's ranked top 20, select and generate complete trade plans for the TOP 10 stocks.
 
 TRADE STYLE: {trade_style}
 RISK LEVEL: {risk_level}
@@ -131,11 +196,33 @@ Rules for price levels:
 - Minimum R:R ratio must be 1.5:1
 
 Rank by overall conviction (confluence of signals + momentum strength).
-""",
+"""
+    trade_plan_task = Task(
+        description=strategist_prompt,
         expected_output="Top 10 complete trade plans in the exact format specified above",
         agent=strategist,
         context=[screening_task],
     )
+
+    # --- Save prompts for inspection ---
+    log_path = _save_prompt_log(
+        prompts={
+            "1. Technical Analyst (screening_task)": screening_prompt,
+            "2. Trade Strategist (trade_plan_task)": strategist_prompt,
+        },
+        scan_meta={
+            "stocks_count": len(stocks_data),
+            "trade_style": trade_style,
+            "risk_level": risk_level,
+            "provider": provider,
+        },
+    )
+    if progress_callback:
+        progress_callback("step", f"📝 Prompts saved to {log_path.name} ({log_path.parent.name}/)")
+        # Surface a short preview into the UI log so user can see the rendered table without opening the file
+        preview_lines = stocks_text.split("\n")[:5]
+        preview = "\n".join(preview_lines) + f"\n... ({len(stocks_data)} stocks total)"
+        progress_callback("step", f"📋 Prompt preview (first 5 stocks of the data table sent to Analyst):\n{preview}")
 
     # --- Run the crew ---
     crew = Crew(
@@ -145,8 +232,19 @@ Rank by overall conviction (confluence of signals + momentum strength).
         verbose=False,
     )
 
-    result = crew.kickoff()
-    return str(result)
+    import time
+    for attempt in range(3):
+        try:
+            result = crew.kickoff()
+            return str(result)
+        except Exception as e:
+            error_msg = str(e)
+            if ("rate_limit" in error_msg.lower() or "429" in error_msg or "RateLimitError" in error_msg) and attempt < 2:
+                wait = 15 * (attempt + 1)
+                print(f"[CrewAI] Rate limit hit, waiting {wait}s before retry {attempt+2}/3...")
+                time.sleep(wait)
+            else:
+                raise
 
 
 def _format_stocks_for_agents(stocks_data: list[dict]) -> str:

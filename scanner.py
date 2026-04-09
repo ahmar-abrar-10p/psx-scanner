@@ -1,5 +1,6 @@
 from data import fetch_all
 from agents import run_analysis
+from ai_data import fetch_data_via_ai
 import json
 import re
 
@@ -66,6 +67,8 @@ def run_scan(
     risk_level: str = "Moderate",
     provider: str = "gemini",
     api_key: str = None,
+    use_ai_data: bool = False,
+    force_refresh: bool = False,
     progress_callback=None,
 ) -> dict:
     """
@@ -82,18 +85,35 @@ def run_scan(
     """
     try:
         # Step 1: Data
+        if use_ai_data:
+            if progress_callback:
+                progress_callback("step", f"AI Data Mode — fetching PSX data via {provider.title()}...")
+            stocks_data = fetch_data_via_ai(
+                api_key=api_key,
+                provider=provider,
+                progress_callback=progress_callback,
+            )
+            if not stocks_data:
+                return {"error": "AI could not fetch stock data. Try again or switch to yfinance mode.", "picks": [], "stocks_scanned": 0}
+        else:
+            if progress_callback:
+                progress_callback("step", "Fetching OHLCV data for 100 stocks via yfinance...")
+
+            def fetch_progress(sym, cur, tot):
+                if progress_callback:
+                    if sym.startswith("[SKIP]"):
+                        progress_callback("skip", sym)
+                    else:
+                        progress_callback("fetch", f"[{cur}/{tot}] Fetching {sym}...")
+
+            stocks_data = fetch_all(progress_callback=fetch_progress, force_refresh=force_refresh)
+
+            if not stocks_data:
+                return {"error": "No stock data could be fetched. Yahoo Finance may be rate limiting. Wait a few minutes and try again.", "picks": [], "stocks_scanned": 0}
+
+        # No pre-filtering — agents see all 100 stocks per design decision (BUILD_PLAN.md)
         if progress_callback:
-            progress_callback("step", "Fetching OHLCV data for 100 stocks...")
-
-        stocks_data = fetch_all(
-            progress_callback=lambda sym, cur, tot: progress_callback("fetch", f"[{cur}/{tot}] Fetching {sym}...") if progress_callback else None
-        )
-
-        if not stocks_data:
-            return {"error": "No stock data could be fetched. Check your internet connection.", "picks": [], "stocks_scanned": 0}
-
-        if progress_callback:
-            progress_callback("step", f"Data fetched for {len(stocks_data)} stocks. Running AI analysis...")
+            progress_callback("step", f"Data ready for {len(stocks_data)} stocks. Sending all to AI agents (no pre-filter)...")
 
         # Step 2: AI Analysis
         raw_output = run_analysis(
@@ -102,6 +122,7 @@ def run_scan(
             risk_level=risk_level,
             provider=provider,
             api_key=api_key,
+            progress_callback=progress_callback,
         )
 
         if progress_callback:
