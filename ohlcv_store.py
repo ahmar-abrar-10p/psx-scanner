@@ -312,6 +312,40 @@ def backfill_all(
     return update_batch(symbols, session=session, progress_callback=progress_callback)
 
 
+def refresh_live_bars(symbols: list[str], live_data: dict[str, dict]) -> int:
+    """
+    Update today's bar in the OHLCV store for all symbols that have live data.
+    Replaces existing today row if present, or appends it.
+    Returns count of stocks updated.
+    """
+    today = _last_psx_trading_day()
+    today_ts = pd.Timestamp(today)
+    updated = 0
+
+    for sym in symbols:
+        if sym not in live_data:
+            continue
+        bar = live_data[sym]
+        if bar.get("close", 0) <= 0:
+            continue
+        existing = load_ohlcv(sym)
+        if existing is None:
+            continue
+
+        live_row = pd.DataFrame(
+            [{"Open": bar["open"], "High": bar["high"], "Low": bar["low"],
+              "Close": bar["close"], "Volume": bar["volume"]}],
+            index=pd.DatetimeIndex([today_ts]),
+        )
+        # Remove existing today row if present, then append fresh
+        df = existing[existing.index.date < today]
+        df = pd.concat([df, live_row])
+        save_ohlcv(sym, df)
+        updated += 1
+
+    return updated
+
+
 def clear_store(symbols: list[str] | None = None) -> int:
     """Delete stored OHLCV files. If symbols is None, delete all. Returns count deleted."""
     if not OHLCV_DIR.exists():
@@ -331,7 +365,8 @@ def clear_store(symbols: list[str] | None = None) -> int:
 
 
 def store_stats() -> dict:
-    """Return stats about the OHLCV store."""
+    """Return lightweight stats about the OHLCV store.
+    Reads only one sample file for date range instead of all files."""
     if not OHLCV_DIR.exists():
         return {"count": 0, "total_size_kb": 0, "oldest": None, "newest": None}
 
@@ -340,22 +375,19 @@ def store_stats() -> dict:
         return {"count": 0, "total_size_kb": 0, "oldest": None, "newest": None}
 
     total_size = sum(f.stat().st_size for f in files)
+
+    # Sample one file (the largest, likely most complete) for date range
+    sample = max(files, key=lambda f: f.stat().st_size)
     oldest_date = None
     newest_date = None
-
-    for f in files:
-        try:
-            df = pd.read_parquet(f)
-            df.index = pd.to_datetime(df.index)
-            if not df.empty:
-                first = df.index[0].date()
-                last = df.index[-1].date()
-                if oldest_date is None or first < oldest_date:
-                    oldest_date = first
-                if newest_date is None or last > newest_date:
-                    newest_date = last
-        except Exception:
-            continue
+    try:
+        df = pd.read_parquet(sample)
+        df.index = pd.to_datetime(df.index)
+        if not df.empty:
+            oldest_date = df.index[0].date()
+            newest_date = df.index[-1].date()
+    except Exception:
+        pass
 
     return {
         "count": len(files),

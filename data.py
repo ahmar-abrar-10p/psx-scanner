@@ -1,3 +1,4 @@
+import functools
 import pandas as pd
 import pandas_ta as ta
 import requests
@@ -19,29 +20,54 @@ SARMAAYA_STOCKS_URL = "https://beta-restapi.sarmaaya.pk/api/stocks/"
 SARMAAYA_TICKER_URL = "https://beta-restapi.sarmaaya.pk/api/stocks/ticker"
 
 
+@functools.lru_cache(maxsize=1)
+def _load_universe_df() -> pd.DataFrame:
+    """Load and cache the universe CSV. Called once per process."""
+    return pd.read_csv(UNIVERSE_FILE)
+
+
 def load_universe() -> list[str]:
     """Load all KMI Shariah stock symbols from CSV."""
-    df = pd.read_csv(UNIVERSE_FILE)
-    return df["symbol"].tolist()
+    return _load_universe_df()["symbol"].tolist()
+
+
+def get_company_info(symbol: str) -> tuple[str, str]:
+    """Look up company name and sector from KMI_all.csv. Returns (name, sector)."""
+    df = _load_universe_df()
+    match = df[df["symbol"] == symbol]
+    if not match.empty:
+        name = str(match.iloc[0].get("name", symbol))
+        sector = str(match.iloc[0].get("sector", "Unknown"))
+        return name, sector
+    return symbol, "Unknown"
 
 
 def fetch_live_data(progress_callback=None) -> dict[str, dict]:
     """
     Fetch today's live OHLCV for all PSX stocks from Sarmaaya API.
-    Combines two endpoints:
+    Combines two endpoints in parallel:
       - /api/stocks/       -> open, high, low, close, change
       - /api/stocks/ticker -> volume
     Returns dict keyed by symbol: {symbol: {open, high, low, close, volume, change}}.
     Returns empty dict on failure.
     """
+    from concurrent.futures import ThreadPoolExecutor
+
     if progress_callback:
         progress_callback("Fetching live data from Sarmaaya API...", 0, 0)
 
-    # Fetch OHLC from /api/stocks/
+    # Fetch both endpoints in parallel
+    def _get(url):
+        r = requests.get(url, timeout=30)
+        r.raise_for_status()
+        return r.json()
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_stocks = ex.submit(_get, SARMAAYA_STOCKS_URL)
+        f_ticker = ex.submit(_get, SARMAAYA_TICKER_URL)
+
     try:
-        r1 = requests.get(SARMAAYA_STOCKS_URL, timeout=30)
-        r1.raise_for_status()
-        stocks_data = r1.json()
+        stocks_data = f_stocks.result()
     except Exception as e:
         logger.warning("Sarmaaya /api/stocks/ failed: %s", e)
         return {}
@@ -61,19 +87,16 @@ def fetch_live_data(progress_callback=None) -> dict[str, dict]:
                 "low": float(item.get("low", 0)),
                 "close": float(item.get("close", 0)),
                 "change": float(item.get("change", 0)),
-                "volume": 0,  # filled from ticker endpoint
+                "volume": 0,
             }
         except (ValueError, TypeError):
             continue
 
-    # Fetch volume from /api/stocks/ticker
+    # Merge volume from ticker endpoint
     try:
-        r2 = requests.get(SARMAAYA_TICKER_URL, timeout=30)
-        r2.raise_for_status()
-        ticker_data = r2.json()
+        ticker_data = f_ticker.result()
     except Exception as e:
         logger.warning("Sarmaaya /api/stocks/ticker failed: %s", e)
-        # Return what we have — OHLC without volume
         return data
 
     ticker_items = ticker_data if isinstance(ticker_data, list) else ticker_data.get("response", [])

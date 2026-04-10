@@ -1,9 +1,9 @@
 import streamlit as st
-import os
 from dotenv import load_dotenv
 from scanner import run_scan
 from data import load_universe, fetch_live_data
-from ohlcv_store import backfill_all, store_stats, _make_session, save_ohlcv, load_ohlcv, _last_psx_trading_day
+from ohlcv_store import backfill_all, store_stats, _make_session, refresh_live_bars
+from ui_helpers import render_provider_sidebar, render_log_html
 from mock_data import get_mock_result
 from datetime import datetime
 
@@ -30,32 +30,7 @@ st.caption("Shariah-compliant T+1 & Swing trade picks — powered by AI analysis
 # --- Sidebar: Settings ---
 with st.sidebar:
     st.header("⚙️ Settings")
-
-    provider = st.selectbox(
-        "AI Provider",
-        options=["ollama", "gemini", "groq", "openai"],
-        format_func=lambda x: {
-            "ollama": "Ollama — Local (Free, No API key)",
-            "gemini": "Google Gemini (Free)",
-            "groq": "Groq — Llama 3.3 70b (Free, Fast)",
-            "openai": "OpenAI GPT-4o Mini",
-        }.get(x, x),
-        key="scanner_provider",
-    )
-
-    default_key = {
-        "ollama": "not-needed",
-        "gemini": os.getenv("GEMINI_API_KEY", ""),
-        "groq": os.getenv("GROQ_API_KEY", ""),
-        "openai": os.getenv("OPENAI_API_KEY", ""),
-    }.get(provider, "")
-    api_key = st.text_input(
-        "API Key",
-        value=default_key,
-        type="password",
-        help="Enter your API key. For Gemini, get one free at aistudio.google.com",
-        key="scanner_api_key",
-    )
+    provider, api_key = render_provider_sidebar("scanner")
 
     st.divider()
     st.header("🔧 Scan Filters")
@@ -141,29 +116,7 @@ if st.session_state.refreshing_today:
         live_data = fetch_live_data()
         if live_data:
             symbols = load_universe()
-            today = _last_psx_trading_day()
-            updated = 0
-            for sym in symbols:
-                if sym not in live_data:
-                    continue
-                bar = live_data[sym]
-                if bar["close"] <= 0:
-                    continue
-                existing = load_ohlcv(sym)
-                if existing is None:
-                    continue
-                import pandas as _pd
-                today_ts = _pd.Timestamp(today)
-                live_row = _pd.DataFrame(
-                    [{"Open": bar["open"], "High": bar["high"], "Low": bar["low"],
-                      "Close": bar["close"], "Volume": bar["volume"]}],
-                    index=_pd.DatetimeIndex([today_ts]),
-                )
-                # Remove existing today row if present, then append fresh
-                df = existing[existing.index.date < today]
-                df = _pd.concat([df, live_row])
-                save_ohlcv(sym, df)
-                updated += 1
+            updated = refresh_live_bars(symbols, live_data)
             st.success(f"Updated {updated} stocks with today's live data.")
         else:
             st.error("Failed to fetch live data from Sarmaaya API.")
@@ -181,14 +134,7 @@ if st.session_state.generating_history:
     log_lines = []
 
     def render_history_log():
-        log_html = "".join([
-            f"<div style='color:{'#facc15' if 'SKIP' in l or 'WARN' in l else '#6ee7b7' if 'complete' in l.lower() or 'ready' in l.lower() else '#ef4444' if 'ERROR' in l else '#93c5fd'};font-size:12px;font-family:monospace;padding:1px 0'>{l}</div>"
-            for l in log_lines[-20:]
-        ])
-        log_placeholder.markdown(
-            f"<div style='background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:12px;max-height:200px;overflow-y:auto'>{log_html}</div>",
-            unsafe_allow_html=True,
-        )
+        log_placeholder.markdown(render_log_html(log_lines[-20:], max_height=200), unsafe_allow_html=True)
 
     def history_progress(msg, current, total):
         log_lines.append(f"⚙️ {msg}")
@@ -249,14 +195,7 @@ if scan_clicked:
         log_lines = []
 
         def render_log():
-            log_html = "".join([
-                f"<div style='color:{'#facc15' if '⚠️' in l else '#6ee7b7' if '✅' in l else '#ef4444' if 'ERROR' in l else '#93c5fd'};font-size:12px;font-family:monospace;padding:1px 0'>{l}</div>"
-                for l in log_lines
-            ])
-            log_placeholder.markdown(
-                f"<div style='background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:12px;height:200px;overflow-y:auto'>{log_html}</div>",
-                unsafe_allow_html=True,
-            )
+            log_placeholder.markdown(render_log_html(log_lines, max_height=200), unsafe_allow_html=True)
 
         if mock_mode:
             log_lines.append("🧪 Mock mode enabled — skipping all API calls")
@@ -312,14 +251,7 @@ if st.session_state.scan_error:
 # --- Collapsible scan log ---
 if st.session_state.scan_log:
     with st.expander("📋 Scan Log", expanded=False):
-        log_html = "".join([
-            f"<div style='color:{'#facc15' if '⚠️' in l else '#6ee7b7' if '✅' in l else '#ef4444' if 'ERROR' in l else '#93c5fd'};font-size:12px;font-family:monospace;padding:1px 0'>{l}</div>"
-            for l in st.session_state.scan_log
-        ])
-        st.markdown(
-            f"<div style='background:#0f172a;border-radius:6px;padding:12px;max-height:300px;overflow-y:auto'>{log_html}</div>",
-            unsafe_allow_html=True,
-        )
+        st.markdown(render_log_html(st.session_state.scan_log, max_height=300), unsafe_allow_html=True)
 
 # --- Results ---
 if st.session_state.scan_result:

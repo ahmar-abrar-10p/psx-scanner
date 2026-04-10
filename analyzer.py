@@ -8,26 +8,11 @@ import re
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
-from data import fetch_single_stock, compute_technicals
+from data import fetch_single_stock, get_company_info
 from deep_analysis import run_deep_analysis
 from agents import run_deep_analysis_ai
 
-UNIVERSE_FILE = Path(__file__).parent / "KMI_top100.csv"
 LOG_DIR = Path(__file__).parent / "prompt_logs"
-
-
-def _get_company_info(symbol: str) -> tuple[str, str]:
-    """Look up company name and sector from KMI_top100.csv. Returns (name, sector)."""
-    try:
-        df = pd.read_csv(UNIVERSE_FILE)
-        match = df[df["symbol"] == symbol]
-        if not match.empty:
-            name = match.iloc[0]["name"]
-            sector = match.iloc[0].get("sector", "Unknown")
-            return name, sector
-    except Exception:
-        pass
-    return symbol, "Unknown"
 
 
 class AnalysisLog:
@@ -193,7 +178,7 @@ def run_single_stock_analysis(
         if len(df) < 20:
             return {"error": f"Insufficient data for {symbol} — only {len(df)} bars (need 20+).", "verdict": {}, "computation_log": []}
 
-        company_name, sector = _get_company_info(symbol)
+        company_name, sector = get_company_info(symbol)
 
         # Basic info
         price = round(float(df["Close"].iloc[-1]), 2)
@@ -335,7 +320,6 @@ def run_single_stock_analysis(
             "change": change,
             "change_pct": change_pct,
             "volume": volume,
-            "basic_technicals": compute_technicals(df),
             "computation_log": format_log_for_display(log_entries),
             "confluence": confluence["values"],
             "verdict": verdict,

@@ -1,9 +1,9 @@
 import streamlit as st
-import os
 from dotenv import load_dotenv
 from analyzer import run_single_stock_analysis
 from data import load_universe
 from ohlcv_store import store_stats
+from ui_helpers import render_provider_sidebar, render_log_html
 from datetime import datetime
 
 load_dotenv()
@@ -39,32 +39,7 @@ st.caption("Deep multi-technique analysis — 17 indicators + AI verdict for any
 # --- Sidebar ---
 with st.sidebar:
     st.header("⚙️ Settings")
-
-    provider = st.selectbox(
-        "AI Provider",
-        options=["ollama", "gemini", "groq", "openai"],
-        format_func=lambda x: {
-            "ollama": "Ollama — Local (Free, No API key)",
-            "gemini": "Google Gemini (Free)",
-            "groq": "Groq — Llama 3.3 70b (Free, Fast)",
-            "openai": "OpenAI GPT-4o Mini",
-        }.get(x, x),
-        key="analyzer_provider",
-    )
-
-    default_key = {
-        "ollama": "not-needed",
-        "gemini": os.getenv("GEMINI_API_KEY", ""),
-        "groq": os.getenv("GROQ_API_KEY", ""),
-        "openai": os.getenv("OPENAI_API_KEY", ""),
-    }.get(provider, "")
-    api_key = st.text_input(
-        "API Key",
-        value=default_key,
-        type="password",
-        help="Enter your API key for the selected provider",
-        key="analyzer_api_key",
-    )
+    provider, api_key = render_provider_sidebar("analyzer")
 
     st.divider()
     st.caption("Analysis: 17 technical techniques + AI synthesis")
@@ -113,14 +88,7 @@ if analyze_clicked:
         log_lines = []
 
         def render_log():
-            log_html = "".join([
-                f"<div style='color:{'#facc15' if 'STALE' in l or 'WARN' in l else '#6ee7b7' if 'FRESH' in l or 'complete' in l.lower() else '#ef4444' if 'ERROR' in l else '#93c5fd'};font-size:12px;font-family:monospace;padding:1px 0'>{l}</div>"
-                for l in log_lines
-            ])
-            log_placeholder.markdown(
-                f"<div style='background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:12px;max-height:300px;overflow-y:auto'>{log_html}</div>",
-                unsafe_allow_html=True,
-            )
+            log_placeholder.markdown(render_log_html(log_lines, max_height=300), unsafe_allow_html=True)
 
         def progress_callback(msg_type, msg):
             if msg_type == "step":

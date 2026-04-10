@@ -7,17 +7,18 @@ import os
 PROMPT_LOG_DIR = Path(__file__).parent / "prompt_logs"
 
 
-def _save_prompt_log(prompts: dict, scan_meta: dict) -> Path:
-    """Save the rendered agent prompts to a timestamped file for inspection."""
+def _save_prompt_log(prompts: dict, meta: dict, prefix: str = "scan", title: str = "PSX SCANNER") -> Path:
+    """Save rendered agent prompts to a timestamped file for inspection."""
     PROMPT_LOG_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    path = PROMPT_LOG_DIR / f"scan_{ts}.txt"
+    suffix = f"_{meta.get('symbol', '')}" if meta.get("symbol") else ""
+    path = PROMPT_LOG_DIR / f"{prefix}{suffix}_{ts}.txt"
 
     lines = []
     lines.append("=" * 80)
-    lines.append(f"PSX SCANNER — PROMPT LOG  ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
+    lines.append(f"{title} — PROMPT LOG  ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
     lines.append("=" * 80)
-    for k, v in scan_meta.items():
+    for k, v in meta.items():
         lines.append(f"{k}: {v}")
     lines.append("")
 
@@ -238,7 +239,7 @@ Rank by overall conviction (confluence of signals + momentum strength).
             "1. Technical Analyst (screening_task)": screening_prompt,
             "2. Trade Strategist (trade_plan_task)": strategist_prompt,
         },
-        scan_meta={
+        meta={
             "stocks_count": len(stocks_data),
             "trade_style": trade_style,
             "risk_level": risk_level,
@@ -275,28 +276,6 @@ Rank by overall conviction (confluence of signals + momentum strength).
                 raise
 
 
-def _save_analysis_prompt_log(prompts: dict, meta: dict) -> Path:
-    """Save analyzer prompt log to a separate file."""
-    PROMPT_LOG_DIR.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    path = PROMPT_LOG_DIR / f"analysis_{meta.get('symbol', 'unknown')}_{ts}.txt"
-
-    lines = []
-    lines.append("=" * 80)
-    lines.append(f"PSX STOCK ANALYZER — PROMPT LOG  ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
-    lines.append("=" * 80)
-    for k, v in meta.items():
-        lines.append(f"{k}: {v}")
-    lines.append("")
-
-    for agent_name, prompt_text in prompts.items():
-        lines.append("=" * 80)
-        lines.append(f"AGENT: {agent_name}")
-        lines.append("=" * 80)
-        lines.append(prompt_text)
-        lines.append("")
-
-    path.write_text("\n".join(lines), encoding="utf-8")
     return path
 
 
