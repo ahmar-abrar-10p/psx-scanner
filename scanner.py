@@ -68,12 +68,11 @@ def run_scan(
     provider: str = "gemini",
     api_key: str = None,
     use_ai_data: bool = False,
-    force_refresh: bool = False,
     progress_callback=None,
 ) -> dict:
     """
     Full scan pipeline:
-    1. Fetch OHLCV + compute technicals for all 100 stocks
+    1. Fetch OHLCV + compute technicals for all KMI stocks
     2. Pass to CrewAI agents for analysis
     3. Return structured results
 
@@ -97,7 +96,7 @@ def run_scan(
                 return {"error": "AI could not fetch stock data. Try again or switch to yfinance mode.", "picks": [], "stocks_scanned": 0}
         else:
             if progress_callback:
-                progress_callback("step", "Fetching OHLCV data for 100 stocks via yfinance...")
+                progress_callback("step", "Fetching OHLCV data for KMI stocks...")
 
             def fetch_progress(sym, cur, tot):
                 if progress_callback:
@@ -106,7 +105,7 @@ def run_scan(
                     else:
                         progress_callback("fetch", f"[{cur}/{tot}] Fetching {sym}...")
 
-            stocks_data = fetch_all(progress_callback=fetch_progress, force_refresh=force_refresh)
+            stocks_data = fetch_all(progress_callback=fetch_progress)
 
             if not stocks_data:
                 return {"error": "No stock data could be fetched. Yahoo Finance may be rate limiting. Wait a few minutes and try again.", "picks": [], "stocks_scanned": 0}

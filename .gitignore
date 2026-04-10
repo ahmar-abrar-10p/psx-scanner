@@ -4,3 +4,4 @@ __pycache__/
 .streamlit/
 cache/
 prompt_logs/
+psx_market_watch.csv

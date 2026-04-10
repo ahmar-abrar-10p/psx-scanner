@@ -56,6 +56,15 @@ def get_llm(provider: str = "gemini", api_key: str = None):
             api_key=api_key or os.getenv("OPENAI_API_KEY"),
             temperature=0.3,
         )
+    elif provider == "ollama":
+        from langchain_ollama import ChatOllama
+        ollama_model = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
+        ollama_base = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        return ChatOllama(
+            model=ollama_model,
+            base_url=ollama_base,
+            temperature=0.3,
+        )
     else:
         raise ValueError(f"Unsupported provider: {provider}")
 
@@ -66,21 +75,39 @@ def get_crewai_llm(provider: str = "gemini", api_key: str = None):
     CrewAI uses its own LLM wrapper, not LangChain objects directly.
     """
     if provider == "gemini":
+        gemini_key = api_key or os.getenv("GEMINI_API_KEY")
+        if gemini_key:
+            os.environ["GEMINI_API_KEY"] = gemini_key
         return LLM(
             model="gemini/gemini-2.0-flash",
-            api_key=api_key or os.getenv("GEMINI_API_KEY"),
+            api_key=gemini_key,
             temperature=0.3,
         )
     elif provider == "groq":
+        groq_key = api_key or os.getenv("GROQ_API_KEY")
+        # litellm requires GROQ_API_KEY env var — setting api_key param alone isn't enough
+        if groq_key:
+            os.environ["GROQ_API_KEY"] = groq_key
         return LLM(
             model="groq/llama-3.3-70b-versatile",
-            api_key=api_key or os.getenv("GROQ_API_KEY"),
+            api_key=groq_key,
             temperature=0.3,
         )
     elif provider == "openai":
+        openai_key = api_key or os.getenv("OPENAI_API_KEY")
+        if openai_key:
+            os.environ["OPENAI_API_KEY"] = openai_key
         return LLM(
             model="openai/gpt-4o-mini",
-            api_key=api_key or os.getenv("OPENAI_API_KEY"),
+            api_key=openai_key,
+            temperature=0.3,
+        )
+    elif provider == "ollama":
+        ollama_model = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
+        ollama_base = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        return LLM(
+            model=f"ollama/{ollama_model}",
+            base_url=ollama_base,
             temperature=0.3,
         )
     else:
@@ -139,8 +166,8 @@ def run_analysis(
 
     # --- Task 1: Screen and shortlist ---
     screening_prompt = f"""
-You have been given technical data for ALL {len(stocks_data)} PSX Shariah-compliant stocks in the KMI Top 100 universe.
-Do NOT pre-filter — analyze every single stock and rank them by conviction.
+You have been given technical data for ALL {len(stocks_data)} PSX Shariah-compliant stocks in the KMI universe.
+You MUST analyze every single stock — do NOT skip or filter any out.
 
 STOCK DATA:
 {stocks_text}
@@ -154,21 +181,22 @@ Your job:
    - Price above EMA20 (uptrend confirmation)
    - Volume ratio > 1.2 (above average volume — institutional interest)
    - MACD histogram positive or turning positive (bullish momentum)
-2. Rank candidates by confluence (how many signals align)
-3. Output your TOP 20 strongest candidates with their key metrics and a confluence score (0-4)
+2. For EVERY stock, compute a confluence score (0-4) based on how many of the above criteria are met.
+3. Output the TOP 100 stocks ranked by confluence score descending, then by volume ratio descending as tiebreaker.
+   Include symbol, price, RSI, EMA status, volume ratio, MACD status, and confluence score for each.
 
-Be strict. Prioritize stocks meeting at least 3 of the 4 criteria, but you may include high-conviction setups
-that meet only 2 if other factors (extreme volume, near 52-week high breakout, etc.) strongly support them.
+IMPORTANT: You must analyze ALL {len(stocks_data)} stocks before ranking. Do not skip any during analysis.
+Output the top 100 after ranking — the next agent needs a broad pool to pick from.
 """
     screening_task = Task(
         description=screening_prompt,
-        expected_output="Top 20 strongest stocks ranked by confluence, with symbol, price, RSI, EMA status, volume ratio, MACD status, and confluence score (0-4)",
+        expected_output="Top 100 stocks ranked by confluence score (0-4), with symbol, price, RSI, EMA status, volume ratio, MACD status, and confluence score",
         agent=analyst,
     )
 
     # --- Task 2: Generate trade plans ---
     strategist_prompt = f"""
-Using the analyst's ranked top 20, select and generate complete trade plans for the TOP 10 stocks.
+Using the analyst's ranked top 100 candidates, select the TOP 10 highest-conviction setups and generate complete trade plans.
 
 TRADE STYLE: {trade_style}
 RISK LEVEL: {risk_level}
@@ -242,6 +270,216 @@ Rank by overall conviction (confluence of signals + momentum strength).
             if ("rate_limit" in error_msg.lower() or "429" in error_msg or "RateLimitError" in error_msg) and attempt < 2:
                 wait = 15 * (attempt + 1)
                 print(f"[CrewAI] Rate limit hit, waiting {wait}s before retry {attempt+2}/3...")
+                time.sleep(wait)
+            else:
+                raise
+
+
+def _save_analysis_prompt_log(prompts: dict, meta: dict) -> Path:
+    """Save analyzer prompt log to a separate file."""
+    PROMPT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    path = PROMPT_LOG_DIR / f"analysis_{meta.get('symbol', 'unknown')}_{ts}.txt"
+
+    lines = []
+    lines.append("=" * 80)
+    lines.append(f"PSX STOCK ANALYZER — PROMPT LOG  ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
+    lines.append("=" * 80)
+    for k, v in meta.items():
+        lines.append(f"{k}: {v}")
+    lines.append("")
+
+    for agent_name, prompt_text in prompts.items():
+        lines.append("=" * 80)
+        lines.append(f"AGENT: {agent_name}")
+        lines.append("=" * 80)
+        lines.append(prompt_text)
+        lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def run_deep_analysis_ai(
+    symbol: str,
+    company_name: str,
+    sector: str = "Unknown",
+    computation_log: str = "",
+    confluence_text: str = "",
+    provider: str = "gemini",
+    api_key: str = None,
+    progress_callback=None,
+) -> str:
+    """
+    Run two-agent pipeline for single-stock deep analysis:
+    Agent 1 (News Scout): Searches for recent news/events for the stock.
+    Agent 2 (Senior Analyst): Synthesizes all technicals + news into a verdict.
+
+    Returns raw string output from the Senior Analyst.
+    """
+    llm = get_crewai_llm(provider, api_key)
+
+    # --- Agent 1: News & Events Scout ---
+    news_scout = Agent(
+        role="PSX News & Events Scout",
+        goal=f"Find recent news, corporate actions, sector developments, and market events relevant to {symbol} ({company_name}) in the {sector} sector",
+        backstory=(
+            "You are a financial news analyst specialized in the Pakistan Stock Exchange. "
+            "You track corporate announcements, earnings, dividends, right issues, board meetings, "
+            "regulatory actions, and sector-wide developments. You are thorough but concise. "
+            "You only report facts you are confident about — never speculate or fabricate news."
+        ),
+        llm=llm,
+        verbose=False,
+        allow_delegation=False,
+    )
+
+    news_prompt = f"""
+Research recent news and events for {symbol} ({company_name}) on the Pakistan Stock Exchange.
+This company belongs to the **{sector}** sector.
+
+Report on these categories (if applicable):
+
+COMPANY-SPECIFIC:
+1. EARNINGS: Recent quarterly/annual results, EPS, profit growth
+2. DIVIDENDS: Recent or upcoming dividend declarations, ex-dates
+3. CORPORATE ACTIONS: Right issues, bonus shares, stock splits, mergers
+4. BOARD/AGM: Upcoming board meetings or AGMs
+5. REGULATORY: SECP notices, compliance issues
+
+SECTOR-WIDE ({sector}):
+6. SECTOR POLICY: Government policies, regulations, taxes, duties affecting the {sector} sector
+7. SECTOR DEMAND: Demand trends, pricing changes, input cost changes for {sector}
+8. SECTOR PEERS: How are peer companies in {sector} performing? Any sector rotation happening?
+9. MACRO FACTORS: SBP interest rate decisions, PKR exchange rate, inflation — specifically how they impact {sector}
+
+MARKET:
+10. MARKET SENTIMENT: Any significant analyst coverage, institutional interest, or index rebalancing
+
+Output format:
+NEWS_SENTIMENT: POSITIVE / NEGATIVE / NEUTRAL / UNKNOWN
+KEY_EVENTS:
+- [event 1]
+- [event 2]
+RISK_FLAGS:
+- [risk 1] (or "None identified")
+CATALYST:
+- [upcoming catalyst that could move the price] (or "None identified")
+
+IMPORTANT: If you are not confident about specific news for this stock, say "No confirmed recent news found"
+rather than fabricating information. Being honest about uncertainty is more valuable than guessing.
+"""
+
+    news_task = Task(
+        description=news_prompt,
+        expected_output="News sentiment, key events, risk flags, and catalysts for the stock",
+        agent=news_scout,
+    )
+
+    # --- Agent 2: Senior Stock Analyst ---
+    analyst = Agent(
+        role="Senior PSX Stock Analyst",
+        goal=f"Provide a definitive BUY, AVOID, or WAIT verdict for {symbol}",
+        backstory=(
+            "You are a senior stock analyst with 25 years on the Pakistan Stock Exchange. "
+            "You specialize in multi-timeframe technical analysis combining trend, momentum, "
+            "volume, volatility, and price level techniques. You also consider news and events. "
+            "You are disciplined and data-driven — you never guess or fabricate data. "
+            "You weigh all evidence, identify conflicts, and produce clear, actionable verdicts."
+        ),
+        llm=llm,
+        verbose=False,
+        allow_delegation=False,
+    )
+
+    analyst_prompt = f"""
+You are analyzing {symbol} ({company_name}) on the Pakistan Stock Exchange.
+
+Below are the results of 17 technical analysis techniques computed on 90 days of OHLCV data,
+plus a news report from our News Scout agent.
+
+=== COMPUTATION LOG ===
+{computation_log}
+
+=== CONFLUENCE SUMMARY ===
+{confluence_text}
+
+=== INSTRUCTIONS ===
+Synthesize ALL the evidence above — technicals AND news — and provide your verdict.
+
+Consider:
+- Do the signals agree or conflict?
+- Which timeframe does the setup favor? (T+1, Swing 3-5d, Positional 2-4w)
+- Are there any news-based risks that override the technical picture?
+- Is the risk:reward favorable (minimum 1.5:1)?
+
+TARGET RANGE RULES (choose targets that match the timeframe):
+- T+1: Target 1 = 2-3% above entry, Target 2 = 4-5% above entry
+- Swing 3-5d: Target 1 = 4-6% above entry, Target 2 = 8-12% above entry
+- Positional 2-4w: Target 1 = 8-12% above entry, Target 2 = 15-20% above entry
+- Pick the nearest REAL level from the computed technicals that falls in the target range.
+  For example, if Fib 38.2% is at +5% and you're doing Swing, that's a good Target 1.
+  If P&F target is at +13%, that's a good Target 2.
+- If no computed level falls in the range, use ATR multiples (e.g., entry + 2×ATR for T1).
+
+STOPLOSS RULES:
+- Conservative: 1×ATR below entry
+- Moderate: 1.5×ATR below entry
+- Aggressive: 2×ATR below entry
+- Prefer a stoploss that aligns with a support level (Pivot S1, Fib level, Value Area Low).
+
+OTHER RULES:
+- Entry must be within 1% of the current price.
+- R:R must be >= 1.5:1 for a BUY verdict (calculated using Target 1, not Target 2).
+- Heavy conflict between signals → WAIT (not enough clarity).
+- AVOID = bearish evidence dominates (not just uncertainty — that's WAIT).
+- If news reveals a major risk (e.g., regulatory action, earnings miss), factor it prominently.
+
+Output EXACTLY this format:
+
+VERDICT: [BUY / AVOID / WAIT]
+CONVICTION: [1-10]
+TIMEFRAME: [T+1 / Swing 3-5d / Positional 2-4w]
+ENTRY: [price or range]
+STOPLOSS: [price] ([which technique/level])
+TARGET 1: [price] ([% gain]) ([which technique/level])
+TARGET 2: [price] ([% gain]) ([which technique/level])
+RISK_REWARD: [ratio]
+BULLISH_SIGNALS: [comma-separated list of bullish techniques]
+BEARISH_SIGNALS: [comma-separated list of bearish techniques]
+CONFLICTS: [describe any contradictions between signals, or "None"]
+NEWS_IMPACT: [how news affects the verdict, or "No significant news impact"]
+REASONING: [3-5 sentence synthesis explaining your verdict]
+"""
+
+    analyst_task = Task(
+        description=analyst_prompt,
+        expected_output="Complete verdict with BUY/AVOID/WAIT, conviction, entry, stoploss, targets, and reasoning",
+        agent=analyst,
+        context=[news_task],
+    )
+
+    # Run crew
+    crew = Crew(
+        agents=[news_scout, analyst],
+        tasks=[news_task, analyst_task],
+        process=Process.sequential,
+        verbose=False,
+    )
+
+    import time
+    for attempt in range(3):
+        try:
+            if progress_callback:
+                progress_callback("step", f"Running AI analysis (attempt {attempt + 1}/3)...")
+            result = crew.kickoff()
+            return str(result)
+        except Exception as e:
+            error_msg = str(e)
+            if ("rate_limit" in error_msg.lower() or "429" in error_msg or "RateLimitError" in error_msg) and attempt < 2:
+                wait = 15 * (attempt + 1)
+                if progress_callback:
+                    progress_callback("step", f"Rate limit hit, waiting {wait}s before retry...")
                 time.sleep(wait)
             else:
                 raise
